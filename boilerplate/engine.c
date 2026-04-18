@@ -1,6 +1,18 @@
 /*
  * engine.c - Supervised Multi-Container Runtime (User Space)
+ * Intentionally partial starter:
+ *   - command-line shape is defined
+ *   - key runtime data structures are defined
+ *   - bounded-buffer skeleton is defined
+ *   - supervisor / client split is outlined
  *
+ * Students are expected to design:
+ *   - the control-plane IPC implementation
+ *   - container lifecycle and metadata synchronization
+ *   - clone + namespace setup for each container
+ *   - producer/consumer behavior for log buffering
+ *   - signal handling and graceful shutdown
+ 
  * TODO implemented: Full runtime design across all components —
  *   - Control-plane IPC via UNIX domain socket (bind/accept/connect)
  *   - Container lifecycle tracking with metadata list and mutex sync
