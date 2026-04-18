@@ -1,6 +1,13 @@
 /*
  * monitor.c - Multi-Container Memory Monitor (Linux Kernel Module)
  *
+ * Provided boilerplate:
+ *   - device registration and teardown
+ *   - timer setup
+ *   - RSS helper
+ *   - soft-limit and hard-limit event helpers
+ *   - ioctl dispatch shell
+ *
  * TODO implemented: All five TODO sections filled in —
  *   - linked-list node struct with PID, container ID, limits, soft_warned flag
  *   - global LIST_HEAD + mutex protecting all list access paths
