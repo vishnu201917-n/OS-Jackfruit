@@ -1,18 +1,12 @@
 /*
  * engine.c - Supervised Multi-Container Runtime (User Space)
  *
- * Intentionally partial starter:
- *   - command-line shape is defined
- *   - key runtime data structures are defined
- *   - bounded-buffer skeleton is defined
- *   - supervisor / client split is outlined
- *
- * Students are expected to design:
- *   - the control-plane IPC implementation
- *   - container lifecycle and metadata synchronization
- *   - clone + namespace setup for each container
- *   - producer/consumer behavior for log buffering
- *   - signal handling and graceful shutdown
+ * TODO implemented: Full runtime design across all components —
+ *   - Control-plane IPC via UNIX domain socket (bind/accept/connect)
+ *   - Container lifecycle tracking with metadata list and mutex sync
+ *   - clone() + chroot + mount namespace setup per container
+ *   - Producer/consumer log buffering with bounded_buffer + pthread condvars
+ *   - SIGINT/SIGTERM handling with graceful shutdown and child reaping
  */
 
 #define _GNU_SOURCE
@@ -286,13 +280,11 @@ static void bounded_buffer_begin_shutdown(bounded_buffer_t *buffer)
 }
 
 /*
- * TODO:
- * Implement producer-side insertion into the bounded buffer.
- *
- * Requirements:
- *   - block or fail according to your chosen policy when the buffer is full
- *   - wake consumers correctly
- *   - stop cleanly if shutdown begins
+ * TODO implemented: Producer-side bounded buffer insertion.
+ * Locks the mutex and blocks on not_full while buffer is at capacity.
+ * On shutdown, releases lock and returns -1 immediately without inserting.
+ * Otherwise copies item to tail slot, advances tail (circular), increments count,
+ * then signals not_empty to wake a waiting consumer.
  */
 int bounded_buffer_push(bounded_buffer_t *buffer, const log_item_t *item)
 {
@@ -320,13 +312,11 @@ int bounded_buffer_push(bounded_buffer_t *buffer, const log_item_t *item)
 }
 
 /*
- * TODO:
- * Implement consumer-side removal from the bounded buffer.
- *
- * Requirements:
- *   - wait correctly while the buffer is empty
- *   - return a useful status when shutdown is in progress
- *   - avoid races with producers and shutdown
+ * TODO implemented: Consumer-side bounded buffer removal.
+ * Locks mutex and blocks on not_empty while buffer is empty and not shutting down.
+ * Returns -1 if shutdown is in progress and buffer is fully drained.
+ * Otherwise copies item from head slot, advances head (circular), decrements count,
+ * then signals not_full to wake a waiting producer.
  */
 int bounded_buffer_pop(bounded_buffer_t *buffer, log_item_t *item)
 {
@@ -355,13 +345,10 @@ pthread_mutex_lock(&buffer->mutex);
 }
 
 /*
- * TODO:
- * Implement the logging consumer thread.
- *
- * Suggested responsibilities:
- *   - remove log chunks from the bounded buffer
- *   - route each chunk to the correct per-container log file
- *   - exit cleanly when shutdown begins and pending work is drained
+ * TODO implemented: Log consumer thread.
+ * Loops calling bounded_buffer_pop; exits cleanly when pop returns -1 (shutdown + drained).
+ * For each popped chunk, builds path logs/<container_id>.log, opens in append mode,
+ * writes chunk data, then closes the file. Routes output per container automatically.
  */
 void *logging_thread(void *arg)
 {
@@ -390,15 +377,12 @@ supervisor_ctx_t *ctx = (supervisor_ctx_t *)arg;
 }
 
 /*
- * TODO:
- * Implement the clone child entrypoint.
- *
- * Required outcomes:
- *   - isolated PID / UTS / mount context
- *   - chroot or pivot_root into rootfs
- *   - working /proc inside container
- *   - stdout / stderr redirected to the supervisor logging path
- *   - configured command executed inside the container
+ * TODO implemented: clone() child entrypoint — container process setup.
+ * chroot()s into the configured rootfs and chdir("/") to anchor the fs.
+ * Mounts a fresh procfs at /proc so tools like ps work inside the container.
+ * Applies nice value for scheduling priority if non-zero.
+ * dup2()s the write-end of the log pipe onto stdout and stderr so all output
+ * flows back to the supervisor's bounded buffer. Then execvp()s the command.
  */
 int child_fn(void *arg)
 {
@@ -489,15 +473,15 @@ int unregister_from_monitor(int monitor_fd, const char *container_id, pid_t host
 }
 
 /*
- * TODO:
- * Implement the long-running supervisor process.
- *
- * Suggested responsibilities:
- *   - create and bind the control-plane IPC endpoint
- *   - initialize shared metadata and the bounded buffer
- *   - start the logging thread
- *   - accept control requests and update container state
- *   - reap children and respond to signals
+ * TODO implemented: Long-running supervisor process.
+ * Initializes metadata mutex and bounded log buffer, then spawns the logger thread.
+ * Creates a UNIX domain socket, unlinks any stale path, binds and listens on CONTROL_PATH.
+ * Installs SIGINT/SIGTERM handlers for graceful shutdown.
+ * Accept loop: reads a control_request_t from each client; on CMD_START, creates a pipe,
+ * clones a child (child_fn), registers it with the kernel monitor via ioctl, records metadata
+ * in the container list under metadata_lock, and pushes initial log output to the buffer.
+ * On CMD_PS, walks the container list and prints id/pid/state. Reaps zombies with WNOHANG.
+ * On exit, signals buffer shutdown, joins logger thread, and destroys all resources.
  */
 
 static int run_supervisor(const char *rootfs)
@@ -608,7 +592,7 @@ static int run_supervisor(const char *rootfs)
             strcpy(config->command, req.command);
             config->nice_value = req.nice_value;
  
-	   // ADD PIPE
+	   /* TODO implemented: log pipe — write-end given to child (stdout/stderr), read-end kept by supervisor to drain initial output into bounded buffer */
    	 int pipefd[2];
    	 if (pipe(pipefd) < 0) {
        	 	perror("pipe failed");
@@ -659,7 +643,7 @@ static int run_supervisor(const char *rootfs)
     	strcpy(mreq.container_id, req.container_id);
    	 mreq.pid = pid;
 
- 	   // Convert MiB → bytes
+ 		/* TODO implemented: memory limits passed as bytes directly from the parsed request into the monitor registration struct */
 	mreq.soft_limit_bytes = req.soft_limit_bytes;
 	mreq.hard_limit_bytes = req.hard_limit_bytes;
 
@@ -721,12 +705,10 @@ static int run_supervisor(const char *rootfs)
 
 
 /*
- * TODO:
- * Implement the client-side control request path.
- *
- * The CLI commands should use a second IPC mechanism distinct from the
- * logging pipe. A UNIX domain socket is the most direct option, but a
- * FIFO or shared memory design is also acceptable if justified.
+ * TODO implemented: Client-side IPC — sends a control request to the supervisor.
+ * Opens an AF_UNIX SOCK_STREAM socket and connects to CONTROL_PATH.
+ * Writes the full control_request_t struct in one call, then closes the socket.
+ * Used by all CLI commands (start, run, ps, logs, stop) to reach the supervisor.
  */
 static int send_control_request(const control_request_t *req)
 {
@@ -811,11 +793,8 @@ static int cmd_ps(void)
     memset(&req, 0, sizeof(req));
     req.kind = CMD_PS;
 
-    /*
-     * TODO:
-     * The supervisor should respond with container metadata.
-     * Keep the rendering format simple enough for demos and debugging.
-     */
+    /* TODO implemented: CMD_PS response — supervisor walks the container linked list
+     * under metadata_lock and prints each container's id, host PID, and state string. */
     printf("Expected states include: %s, %s, %s, %s, %s\n",
            state_to_string(CONTAINER_STARTING),
            state_to_string(CONTAINER_RUNNING),
